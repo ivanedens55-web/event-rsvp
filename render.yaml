@@ -1,0 +1,24 @@
+# Render blueprint for the backend. The frontend deploys separately on Vercel.
+services:
+  - type: web
+    name: event-rsvp-api
+    runtime: python
+    region: frankfurt
+    plan: free
+    rootDir: backend
+    buildCommand: pip install -r requirements.txt
+    startCommand: uvicorn app.main:app --host 0.0.0.0 --port $PORT
+    healthCheckPath: /health
+    envVars:
+      - key: PYTHON_VERSION
+        value: 3.12.8
+      - key: DATABASE_URL        # Supabase Session pooler string for rsvp_app
+        sync: false
+      - key: JWT_SECRET
+        generateValue: true
+      - key: JWT_EXPIRE_MINUTES
+        value: "30"
+      - key: CORS_ORIGINS        # your Vercel URL, e.g. https://event-rsvp.vercel.app
+        sync: false
+      - key: APP_ENV
+        value: production
