@@ -1,0 +1,406 @@
+openapi: 3.1.0
+info:
+  title: Event RSVP API
+  version: 1.0.0
+  description: |
+    Hosts sign up, create events and see who is coming.
+    Guests RSVP through a public link without an account.
+
+    Every error uses the same shape: {"error": {"code": "...", "message": "..."}}.
+    Host routes need a JWT access token in the header: Authorization: Bearer <token>.
+
+servers:
+  - url: http://localhost:8000
+    description: Local development
+
+tags:
+  - name: system
+  - name: auth
+  - name: events
+    description: Private host routes. Hosts only ever see their own events.
+  - name: public
+    description: Open routes for guests. No account needed.
+
+paths:
+  /health:
+    get:
+      tags: [system]
+      summary: Health check
+      responses:
+        "200":
+          description: Service is up
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [status]
+                properties:
+                  status: { type: string, example: ok }
+
+  /auth/register:
+    post:
+      tags: [auth]
+      summary: Create a host account and get a token
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/Credentials" }
+      responses:
+        "201":
+          description: Account created
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Token" }
+        "409": { $ref: "#/components/responses/Conflict" }
+        "422": { $ref: "#/components/responses/ValidationError" }
+
+  /auth/login:
+    post:
+      tags: [auth]
+      summary: Log in and get a token
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/Credentials" }
+      responses:
+        "200":
+          description: Logged in
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Token" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "422": { $ref: "#/components/responses/ValidationError" }
+
+  /auth/me:
+    get:
+      tags: [auth]
+      summary: The logged-in host
+      security: [{ bearerAuth: [] }]
+      responses:
+        "200":
+          description: Current host
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Host" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+
+  /events:
+    get:
+      tags: [events]
+      summary: List my events, soonest first, with RSVP counts
+      security: [{ bearerAuth: [] }]
+      responses:
+        "200":
+          description: My events
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: "#/components/schemas/HostEvent" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+    post:
+      tags: [events]
+      summary: Create an event
+      security: [{ bearerAuth: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/EventCreate" }
+      responses:
+        "201":
+          description: Event created
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/HostEvent" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "422": { $ref: "#/components/responses/ValidationError" }
+
+  /events/{event_id}:
+    parameters:
+      - $ref: "#/components/parameters/EventId"
+    get:
+      tags: [events]
+      summary: One of my events, with RSVP counts
+      security: [{ bearerAuth: [] }]
+      responses:
+        "200":
+          description: The event
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/HostEvent" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/NotFound" }
+    patch:
+      tags: [events]
+      summary: Update one of my events (send only the fields to change)
+      security: [{ bearerAuth: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/EventUpdate" }
+      responses:
+        "200":
+          description: Updated event
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/HostEvent" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "409": { $ref: "#/components/responses/Conflict" }
+        "422": { $ref: "#/components/responses/ValidationError" }
+    delete:
+      tags: [events]
+      summary: Delete one of my events and all its RSVPs
+      security: [{ bearerAuth: [] }]
+      responses:
+        "204": { description: Deleted }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/NotFound" }
+
+  /events/{event_id}/rsvps:
+    parameters:
+      - $ref: "#/components/parameters/EventId"
+    get:
+      tags: [events]
+      summary: Guest list for one of my events, newest first
+      security: [{ bearerAuth: [] }]
+      responses:
+        "200":
+          description: Guest list
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: "#/components/schemas/Rsvp" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/NotFound" }
+
+  /public/events/{slug}:
+    parameters:
+      - $ref: "#/components/parameters/Slug"
+    get:
+      tags: [public]
+      summary: Public event details. Never includes guest names or emails.
+      responses:
+        "200":
+          description: The event
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/PublicEvent" }
+        "404": { $ref: "#/components/responses/NotFound" }
+
+  /public/events/{slug}/rsvps:
+    parameters:
+      - $ref: "#/components/parameters/Slug"
+    post:
+      tags: [public]
+      summary: RSVP to an event as a guest
+      description: |
+        One RSVP per email per event. Fails with 409 when RSVPs are closed,
+        the event has started, the event is full, or this email already replied.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/RsvpCreate" }
+      responses:
+        "201":
+          description: RSVP saved
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/RsvpConfirmation" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "409": { $ref: "#/components/responses/Conflict" }
+        "422": { $ref: "#/components/responses/ValidationError" }
+
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+
+  parameters:
+    EventId:
+      name: event_id
+      in: path
+      required: true
+      schema: { type: integer, minimum: 1 }
+    Slug:
+      name: slug
+      in: path
+      required: true
+      schema: { type: string, pattern: "^[A-Za-z0-9_-]{8,32}$" }
+
+  schemas:
+    Error:
+      type: object
+      required: [error]
+      properties:
+        error:
+          type: object
+          required: [code, message]
+          properties:
+            code:
+              type: string
+              enum:
+                - VALIDATION_ERROR
+                - UNAUTHORIZED
+                - NOT_FOUND
+                - METHOD_NOT_ALLOWED
+                - EMAIL_TAKEN
+                - RSVP_CLOSED
+                - EVENT_FULL
+                - ALREADY_RESPONDED
+                - CAPACITY_TOO_LOW
+                - HTTP_ERROR
+                - INTERNAL_ERROR
+            message: { type: string }
+
+    Credentials:
+      type: object
+      required: [email, password]
+      properties:
+        email: { type: string, format: email, maxLength: 254 }
+        password: { type: string, minLength: 8, maxLength: 128 }
+
+    Token:
+      type: object
+      required: [access_token, token_type, expires_in]
+      properties:
+        access_token: { type: string }
+        token_type: { type: string, example: bearer }
+        expires_in: { type: integer, description: Seconds until the token expires }
+
+    Host:
+      type: object
+      required: [id, email]
+      properties:
+        id: { type: integer }
+        email: { type: string }
+
+    EventCreate:
+      type: object
+      required: [title, starts_at]
+      properties:
+        title: { type: string, minLength: 1, maxLength: 120 }
+        description: { type: string, maxLength: 2000, default: "" }
+        location: { type: string, maxLength: 200, default: "" }
+        starts_at:
+          type: string
+          format: date-time
+          description: Must include a timezone and be in the future.
+        capacity:
+          type: [integer, "null"]
+          minimum: 1
+          maximum: 10000
+          description: Max people attending (party sizes added up). Null means no limit.
+
+    EventUpdate:
+      type: object
+      description: Every field is optional. Send null for capacity to remove the limit.
+      properties:
+        title: { type: string, minLength: 1, maxLength: 120 }
+        description: { type: string, maxLength: 2000 }
+        location: { type: string, maxLength: 200 }
+        starts_at: { type: string, format: date-time }
+        capacity: { type: [integer, "null"], minimum: 1, maximum: 10000 }
+        rsvp_open: { type: boolean }
+
+    Counts:
+      type: object
+      required: [yes, no, maybe, attending]
+      properties:
+        yes: { type: integer, description: RSVPs answering yes }
+        no: { type: integer }
+        maybe: { type: integer }
+        attending: { type: integer, description: People coming (party sizes of yes RSVPs added up) }
+
+    HostEvent:
+      type: object
+      required: [id, slug, title, description, location, starts_at, capacity, rsvp_open, accepting_rsvps, counts, created_at]
+      properties:
+        id: { type: integer }
+        slug: { type: string, description: Random, unguessable part of the public link }
+        title: { type: string }
+        description: { type: string }
+        location: { type: string }
+        starts_at: { type: string, format: date-time }
+        capacity: { type: [integer, "null"] }
+        rsvp_open: { type: boolean, description: Host's switch to open or close RSVPs }
+        accepting_rsvps: { type: boolean, description: Open, not started yet, and not full }
+        counts: { $ref: "#/components/schemas/Counts" }
+        created_at: { type: string, format: date-time }
+
+    PublicEvent:
+      type: object
+      required: [slug, title, description, location, starts_at, accepting_rsvps, spots_left]
+      properties:
+        slug: { type: string }
+        title: { type: string }
+        description: { type: string }
+        location: { type: string }
+        starts_at: { type: string, format: date-time }
+        accepting_rsvps: { type: boolean }
+        spots_left: { type: [integer, "null"], description: Null when there is no limit }
+
+    RsvpCreate:
+      type: object
+      required: [name, email, response]
+      properties:
+        name: { type: string, minLength: 1, maxLength: 100 }
+        email: { type: string, format: email, maxLength: 254 }
+        response: { type: string, enum: ["yes", "no", "maybe"] }
+        party_size:
+          type: integer
+          minimum: 1
+          maximum: 10
+          default: 1
+          description: People in the group including the guest
+        note: { type: string, maxLength: 500, default: "" }
+
+    RsvpConfirmation:
+      type: object
+      required: [name, response, party_size]
+      properties:
+        name: { type: string }
+        response: { type: string, enum: ["yes", "no", "maybe"] }
+        party_size: { type: integer }
+
+    Rsvp:
+      type: object
+      required: [id, name, email, response, party_size, note, created_at]
+      properties:
+        id: { type: integer }
+        name: { type: string }
+        email: { type: string }
+        response: { type: string, enum: ["yes", "no", "maybe"] }
+        party_size: { type: integer }
+        note: { type: string }
+        created_at: { type: string, format: date-time }
+
+  responses:
+    ValidationError:
+      description: The request body, path or query was invalid
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Error" }
+    Unauthorized:
+      description: Missing, invalid or expired token, or wrong login details
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Error" }
+    NotFound:
+      description: Not found, or not yours (we don't reveal which)
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Error" }
+    Conflict:
+      description: The request clashes with the current state (see error code)
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Error" }
